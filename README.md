@@ -15,14 +15,29 @@ With MobX:
 import { observable } from 'mobx';
 import { cacheAsyncFactory } from 'cache-async-fn';
 
-function createCache<T>(): { value: Record<string, T> } {
-  return observable(
+function createCache<T>() {
+  const target = observable<{ value: Record<string, T | undefined> }>(
     { value: {} },
     {
       value: observable.ref,
     },
   );
+  return {
+    get(cacheKey: string) {
+      return target.value[cacheKey];
+    },
+    set(cacheKey: string, data?: T) {
+      target.value = {
+        ...target.value,
+        [cacheKey]: data,
+      };
+    },
+    clear() {
+      target.value = {};
+    },
+  };
 }
+
 const { cacheAsync } = cacheAsyncFactory(createCache);
 ```
 
@@ -32,8 +47,22 @@ With Vue:
 import { ref } from 'vue';
 import { cacheAsyncFactory } from 'cache-async-fn';
 
-function createCache<T>(): { value: Record<string, T> } {
-  return ref();
+function createCache<T>() {
+  const target = ref<Record<string, T | undefined>>({});
+  return {
+    get(cacheKey: string) {
+      return target.value[cacheKey];
+    },
+    set(cacheKey: string, data?: T) {
+      target.value = {
+        ...target.value,
+        [cacheKey]: data,
+      };
+    },
+    clear() {
+      target.value = {};
+    },
+  };
 }
 const { cacheAsync } = cacheAsyncFactory(createCache);
 ```
@@ -62,7 +91,7 @@ Each `groupKey` has its own cache. The cache is invalidated when the `cacheKey` 
 
 ### Load once globally
 
-The is the default behavior.
+This is the default behavior.
 
 ```ts
 const loadOnceGlobally = cacheAsync(api);

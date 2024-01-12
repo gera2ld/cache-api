@@ -10,8 +10,17 @@ export interface ICachedFunction<T extends unknown[], U> {
   /** Invalidate the current cached value and send a new request without deleting the old value. */
   reload(...args: T): void;
 
+  /** Whether the latest request is settled. */
+  isSettled(...args: T): boolean;
+
+  /** Whether the value returned by `get` is fresh. */
+  isFresh(...args: T): boolean;
+
   /** Clear cache. */
   clear(): void;
+
+  /** The cache storage, only used for testing purpose. */
+  cache: ICacheStorage<U>;
 }
 
 type ICachePrimitiveKey = string | number | undefined;
@@ -29,7 +38,9 @@ export interface ICacheOptions<T extends unknown[]> {
    */
   resolver: (
     ...args: T
-  ) => ICachePrimitiveKey | [cacheGroup: ICachePrimitiveKey, cacheKey: ICachePrimitiveKey];
+  ) =>
+    | ICachePrimitiveKey
+    | [cacheGroup: ICachePrimitiveKey, cacheKey: ICachePrimitiveKey];
   /**
    * Whether stale value should be returned.
    */
@@ -54,15 +65,19 @@ const defaultOptions: ICacheOptions<unknown[]> = {
   ttl: -1,
 };
 
-export const cacheAsyncFactory = <T extends unknown[], U>(
-  cacheFactory: () => { value: Record<string, ICacheData<U> | undefined> },
-) => {
+export interface ICacheStorage<U> {
+  get(cacheGroup: string): ICacheData<U> | undefined;
+  set(cacheGroup: string, data?: ICacheData<U>): void;
+  clear(): void;
+}
+
+export const cacheAsyncFactory = (cacheFactory: <U>() => ICacheStorage<U>) => {
   const cachedFns: ICachedFunction<any, any>[] = [];
-  const cacheAsync = (
+  const cacheAsync = <T extends unknown[], U>(
     fn: (...args: T) => Promise<U>,
     options?: Partial<ICacheOptions<T>>,
   ): ICachedFunction<T, U> => {
-    const cache = cacheFactory();
+    const cache = cacheFactory<U>();
     const { mustRevalidate, resolver, ttl }: ICacheOptions<T> = {
       ...defaultOptions,
       ...options,
@@ -72,35 +87,38 @@ export const cacheAsyncFactory = <T extends unknown[], U>(
       const keys = Array.isArray(res) ? res : ([res, res] as ICacheKeyTuple);
       return keys.map((key) => `${key ?? ''}`) as ICacheKeyTuple;
     };
-    const isFresh = (
-      cacheKey: string,
-      cachedData: ICacheData<U> | undefined,
-    ) => {
+    const withArgs = <V>(keyFn: (keys: ICacheKeyTuple, args: T) => V) => {
+      return (...args: T) => {
+        const keys = resolveKey(...args);
+        return keyFn(keys, args);
+      };
+    };
+    const isSettled = ([cacheGroup, cacheKey]: ICacheKeyTuple) => {
+      const cachedData = cache.get(cacheGroup);
+      return cachedData?.key === cacheKey && cachedData.settled;
+    };
+    const isFresh = ([cacheGroup, cacheKey]: ICacheKeyTuple) => {
+      const cachedData = cache.get(cacheGroup);
       return (
         cachedData?.key === cacheKey &&
         cachedData.settled &&
         (cachedData.expireAt < 0 || cachedData.expireAt > Date.now())
       );
     };
-    const get = (...args: T) => {
-      const [cacheGroup, cacheKey] = resolveKey(...args);
-      const cachedData = cache.value[cacheGroup];
-      if (cachedData && (!mustRevalidate || isFresh(cacheKey, cachedData))) {
+    const get = ([cacheGroup, cacheKey]: ICacheKeyTuple) => {
+      const cachedData = cache.get(cacheGroup);
+      if (cachedData && (!mustRevalidate || isFresh([cacheGroup, cacheKey]))) {
         return cachedData.value;
       }
     };
-    const delete_ = (...args: T) => {
-      const [cacheGroup] = resolveKey(...args);
-      const newCache = { ...cache.value };
-      delete newCache[cacheGroup];
-      cache.value = newCache;
+    const delete_ = ([cacheGroup]: ICacheKeyTuple) => {
+      cache.set(cacheGroup);
     };
     const clear = () => {
-      cache.value = {};
+      cache.clear();
     };
-    const reload = (...args: T) => {
-      const [cacheGroup, cacheKey] = resolveKey(...args);
-      const oldCache = cache.value[cacheGroup];
+    const reload = ([cacheGroup, cacheKey]: ICacheKeyTuple, args: T) => {
+      const oldCache = cache.get(cacheGroup);
       const promise = fn(...args);
       const cachedData: ICacheData<U> = {
         ...oldCache,
@@ -110,12 +128,9 @@ export const cacheAsyncFactory = <T extends unknown[], U>(
         expireAt: -1,
         settled: false,
       };
-      cache.value = {
-        ...cache.value,
-        [cacheGroup]: cachedData,
-      };
+      cache.set(cacheGroup, cachedData);
       const resolve = (error: boolean, value?: U) => {
-        if (cache.value[cacheGroup] !== cachedData) {
+        if (cache.get(cacheGroup) !== cachedData) {
           // cache has been updated, ignore invalidated data
           return;
         }
@@ -125,15 +140,12 @@ export const cacheAsyncFactory = <T extends unknown[], U>(
         } else {
           expireAt = ttl < 0 ? ttl : Date.now() + ttl;
         }
-        cache.value = {
-          ...cache.value,
-          [cacheGroup]: {
-            ...cachedData,
-            value,
-            expireAt,
-            settled: true,
-          },
-        };
+        cache.set(cacheGroup, {
+          ...cachedData,
+          value,
+          expireAt,
+          settled: true,
+        });
       };
       promise.then(
         (value) => {
@@ -146,15 +158,22 @@ export const cacheAsyncFactory = <T extends unknown[], U>(
       return promise;
     };
     const cachedFn: ICachedFunction<T, U> = Object.assign(
-      (...args: T) => {
-        const [cacheGroup, cacheKey] = resolveKey(...args);
-        const cachedData = cache.value[cacheGroup];
-        if (cachedData && isFresh(cacheKey, cachedData)) {
+      withArgs(([cacheGroup, cacheKey], args) => {
+        const cachedData = cache.get(cacheGroup);
+        if (cachedData && isFresh([cacheGroup, cacheKey])) {
           return cachedData.promise;
         }
-        return reload(...args);
+        return reload([cacheGroup, cacheKey], args);
+      }),
+      {
+        get: withArgs(get),
+        delete: withArgs(delete_),
+        reload: withArgs(reload),
+        isSettled: withArgs(isSettled),
+        isFresh: withArgs(isFresh),
+        clear,
+        cache,
       },
-      { get, delete: delete_, reload, clear },
     );
     cachedFns.push(cachedFn);
     return cachedFn;

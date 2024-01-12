@@ -19,9 +19,13 @@
     "build": "tsc",
     "prepublishOnly": "npm run build"
   },
-  "keywords": [],
+  "keywords": ["api", "cache", "async"],
   "author": "Gerald <code@gera2ld.space>",
   "license": "ISC",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/gera2ld/cache-async-fn.git"
+  },
   "devDependencies": {
     "typescript": "^5.3.3"
   }
