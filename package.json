@@ -1,6 +1,6 @@
 {
   "name": "cache-async-fn",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Cache asynchronous functions where they should be",
   "type": "module",
   "main": "./dist/index.js",
