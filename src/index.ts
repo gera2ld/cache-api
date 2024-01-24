@@ -8,7 +8,7 @@ export interface ICachedFunction<T extends unknown[], U> {
   delete(...args: T): void;
 
   /** Invalidate the current cached value and send a new request without deleting the old value. */
-  reload(...args: T): void;
+  reload(...args: T): Promise<T>;
 
   /** Whether the latest request is settled. */
   isSettled(...args: T): boolean;
