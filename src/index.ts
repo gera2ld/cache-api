@@ -1,3 +1,19 @@
+export interface ICacheContext<U> {
+  call(): Promise<U>;
+  /** Return the currently cached value immediately. */
+  get(): U | undefined;
+  /** Override the cache with the specified value. */
+  set(value: U, ttl?: number): void;
+  /** Delete the currently cached value. */
+  delete(): void;
+  /** Invalidate the current cached value and send a new request without deleting the old value. */
+  reload(): Promise<U>;
+  /** Whether the latest request is settled. */
+  isSettled(): boolean;
+  /** Whether the value returned by `get` is fresh. */
+  isFresh(): boolean;
+}
+
 export interface ICachedFunction<T extends unknown[], U> {
   (...args: T): Promise<U>;
 
@@ -8,7 +24,7 @@ export interface ICachedFunction<T extends unknown[], U> {
   delete(...args: T): void;
 
   /** Invalidate the current cached value and send a new request without deleting the old value. */
-  reload(...args: T): Promise<T>;
+  reload(...args: T): Promise<U>;
 
   /** Whether the latest request is settled. */
   isSettled(...args: T): boolean;
@@ -18,6 +34,9 @@ export interface ICachedFunction<T extends unknown[], U> {
 
   /** Clear cache. */
   clear(): void;
+
+  /** Get the cache context so we don't need to pass `args` around. */
+  getContext(...args: T): ICacheContext<U>;
 
   /** The cache storage, only used for testing purpose. */
   cache: ICacheStorage<U>;
@@ -111,6 +130,21 @@ export const cacheAsyncFactory = (cacheFactory: <U>() => ICacheStorage<U>) => {
         return cachedData.value;
       }
     };
+    const set = (
+      [cacheGroup, cacheKey]: ICacheKeyTuple,
+      value?: U,
+      valueTtl = ttl,
+    ) => {
+      const expireAt = valueTtl < 0 ? valueTtl : Date.now() + valueTtl;
+      cache.set(cacheGroup, {
+        key: cacheKey,
+        ...cache.get(cacheGroup),
+        promise: value == null ? Promise.reject() : Promise.resolve(value),
+        value,
+        expireAt,
+        settled: true,
+      });
+    };
     const delete_ = ([cacheGroup]: ICacheKeyTuple) => {
       cache.set(cacheGroup);
     };
@@ -157,20 +191,36 @@ export const cacheAsyncFactory = (cacheFactory: <U>() => ICacheStorage<U>) => {
       );
       return promise;
     };
+    const call = (key: ICacheKeyTuple, args: T) => {
+      const [cacheGroup] = key;
+      const cachedData = cache.get(cacheGroup);
+      if (cachedData && isFresh(key)) {
+        return cachedData.promise;
+      }
+      return reload(key, args);
+    };
+    const getContext = (key: ICacheKeyTuple, args: T) => {
+      return {
+        call: () => call(key, args),
+        get: () => get(key),
+        set: (value: U, ttl = -1) => {
+          set(key, value, ttl);
+        },
+        delete: () => delete_(key),
+        reload: () => reload(key, args),
+        isSettled: () => isSettled(key),
+        isFresh: () => isFresh(key),
+      };
+    };
     const cachedFn: ICachedFunction<T, U> = Object.assign(
-      withArgs(([cacheGroup, cacheKey], args) => {
-        const cachedData = cache.get(cacheGroup);
-        if (cachedData && isFresh([cacheGroup, cacheKey])) {
-          return cachedData.promise;
-        }
-        return reload([cacheGroup, cacheKey], args);
-      }),
+      withArgs(call),
       {
         get: withArgs(get),
         delete: withArgs(delete_),
         reload: withArgs(reload),
         isSettled: withArgs(isSettled),
         isFresh: withArgs(isFresh),
+        getContext: withArgs(getContext),
         clear,
         cache,
       },
