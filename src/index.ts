@@ -192,9 +192,9 @@ export const cacheAsyncFactory = (cacheFactory: <U>() => ICacheStorage<U>) => {
       return promise;
     };
     const call = (key: ICacheKeyTuple, args: T) => {
-      const [cacheGroup] = key;
+      const [cacheGroup, cacheKey] = key;
       const cachedData = cache.get(cacheGroup);
-      if (cachedData && isFresh(key)) {
+      if (cachedData?.key === cacheKey && (isFresh(key) || !isSettled(key))) {
         return cachedData.promise;
       }
       return reload(key, args);
@@ -212,19 +212,16 @@ export const cacheAsyncFactory = (cacheFactory: <U>() => ICacheStorage<U>) => {
         isFresh: () => isFresh(key),
       };
     };
-    const cachedFn: ICachedFunction<T, U> = Object.assign(
-      withArgs(call),
-      {
-        get: withArgs(get),
-        delete: withArgs(delete_),
-        reload: withArgs(reload),
-        isSettled: withArgs(isSettled),
-        isFresh: withArgs(isFresh),
-        getContext: withArgs(getContext),
-        clear,
-        cache,
-      },
-    );
+    const cachedFn: ICachedFunction<T, U> = Object.assign(withArgs(call), {
+      get: withArgs(get),
+      delete: withArgs(delete_),
+      reload: withArgs(reload),
+      isSettled: withArgs(isSettled),
+      isFresh: withArgs(isFresh),
+      getContext: withArgs(getContext),
+      clear,
+      cache,
+    });
     cachedFns.push(cachedFn);
     return cachedFn;
   };
